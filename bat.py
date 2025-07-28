@@ -4,42 +4,341 @@ import os
 import random
 import asyncio
 from dotenv import load_dotenv
+import yt_dlp
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+import re
 
-# Load the bot token from the .env file
+# --- Initial Setup ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+SPOTIPY_CLIENT_ID = os.getenv('SPOTIPY_CLIENT_ID')
+SPOTIPY_CLIENT_SECRET = os.getenv('SPOTIPY_CLIENT_SECRET')
 
+# Define bot intents
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
-intents.voice_states = True 
+intents.voice_states = True
 
-# Create a bot instance with a command prefix and the defined intents
-bot = commands.Bot(command_prefix='!', intents=intents)
+# Create a bot instance and remove the default help command
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
+# Initialize Spotify client
+try:
+    spotify = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SPOTIPY_CLIENT_ID,
+                                                                   client_secret=SPOTIPY_CLIENT_SECRET))
+except Exception as e:
+    spotify = None
+    print(f"Could not initialize Spotify client. Check credentials. Error: {e}")
+
+
+# Global dictionary to store song queues for each server
+song_queues = {}
 names_to_pity = ['Lukas', 'Alex', 'Kally']
 
-# arena_pity_texts = [
-#     "Wir zünden eine Kerze für **{name}** an. Nicht, weil er krank ist, sondern weil er freiwillig im digitalen Elend der League of Legends Arena schmort. Und das auch noch alleine. Man stelle sich das Bild vor: **{name}**, wie er mit einem zufälligen, 14-jährigen Teamkollegen, der nur 'git gud' in den Chat spammt, versucht, gegen eine unbesiegbare Taric-Master-Yi-Kombo zu bestehen. Es ist ein Trauerspiel. 🕯️",
-#     "Man hat uns berichtet, dass **{name}** jetzt seine Abende alleine in der Arena verbringt. Alleine! In einem 2v2v2v2 Modus! Das ist so, als würde man freiwillig mit verbundenen Augen und einem Bein auf dem Rücken an einem Tanzwettbewerb teilnehmen. Jeder Sieg ist ein reiner Glücksfall, jede Niederlage eine bittere Bestätigung seiner selbstgewählten Isolation.",
-#     "Erinnerst du dich, als **{name}** noch Hobbys hatte? Als er noch das Sonnenlicht sah? Jetzt hat er sich für die Arena entschieden. Alleine. Sein einziger sozialer Kontakt besteht darin, von einem Duo mit perfekt abgestimmten Namen und Skins gedemütigt zu werden, während sein eigener Partner versucht, mit Anvil-Augments auf einem AD-Carry zu 'skalieren'. Ruhe in Frieden, Sozialleben von **{name}**. 🕊️",
-#     "Wir haben eine Theorie: **{name}** spielt nicht wirklich alleine. Er hat sich mit dem AFK-Bot angefreundet, den er in jedem zweiten Spiel als Partner bekommt. Sie haben eine besondere Verbindung. Der Bot läuft in die Flammenwand, und **{name}** schreit seinen Monitor an. Eine moderne Liebesgeschichte. Es ist fast schon poetisch, wie tief man sinken kann.",
-#     "'**{name}** spielt Arena nur zum Spaß', sagen sie. Ja, sicher. Und ich gehe zum Zahnarzt für eine Wurzelbehandlung, weil ich die Bohrgeräusche so entspannend finde. Der 'Spaß' in der Solo-Arena besteht darin, zu sehen, ob man durch pures Glück ein spielbares Augment bekommt oder ob man wieder mit 'Erdbeben' auf Janna endet. Wir bedauern zutiefst diese verzweifelte Suche nach Freude am falschen Ort.",
-#     "Ein Ornithologe kann einen Vogel an seinem Ruf erkennen. Wir können **{name}** an den Geräuschen erkennen, die aus seiner Wohnung dringen: ein leises Wimmern, gefolgt von einem lauten 'WARUM ICH?!', wenn der Gegner mit dem 'Goliath'-Augment und 8000 Lebenspunkten auf ihn zurollt. Sein Verstand ist so gebrochen wie die Spielbalance dieses Modus.",
-#     "Vielleicht haben wir **{name}** falsch eingeschätzt. Vielleicht ist er kein Opfer, sondern ein Täter. Der Typ, der alleine in die Arena geht, um der Partner von jemand anderem zu sein und dessen Spielerlebnis aktiv zu ruinieren. Er wählt Heimerdinger, stellt seine Türme in die Ecke und schaut Netflix. In diesem Fall... ist unser Bedauern noch größer, denn wer so etwas tut wie **{name}**, hat die Kontrolle über sein Leben endgültig verloren.",
-#     "Rein statistisch gesehen ist die Wahrscheinlichkeit, in der Solo-Arena einen kompetenten, nicht-toxischen Partner zu bekommen, geringer als von einem Blitz getroffen zu werden, während man im Lotto gewinnt. Und **{name}** versucht dieses Glücksspiel jeden Abend aufs Neue. Das ist kein Hobby mehr, das ist eine ausgewachsene Sucht nach Bestrafung. Wir hoffen, er findet bald Hilfe.",
-#     "**{name}** schreibt 'gl hf' in den Chat. Niemand antwortet. Er pingt, dass er angreifen will. Sein Partner farmt die Pflanze in der Mitte. Er stirbt einen heldenhaften Tod. Sein Partner tanzt. Die Arena ist ein Spiegel seiner Seele: eine kalte, leere Fläche, in der seine Schreie ungehört verhallen. Tiefes, tiefes Mitleid.",
-#     "Am Ende kämpft **{name}** nicht gegen die sieben anderen Teams. Er kämpft nicht einmal gegen die unausgewogenen Champions oder die zufälligen Augments. Er kämpft gegen die erdrückende Gewissheit, dass er diesen digitalen Tiefpunkt ganz alleine erreicht hat. Und während der Feuerring sich um ihn schließt, erkennt er: Der wahre Schmerz ist nicht das Ausscheiden, sondern das Wissen, dass er danach wieder alleine in der Warteschlange sitzt. Ein Teufelskreis. F."
-# ]
+# --- YouTube & FFmpeg Configuration ---
+YTDL_OPTIONS = {
+    'format': 'bestaudio/best',
+    'extractaudio': True,
+    'audioformat': 'mp3',
+    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+    'restrictfilenames': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0',
+}
 
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn',
+}
+
+# --- Helper Functions ---
+def play_next_song(ctx):
+    guild_id = ctx.guild.id
+    if guild_id in song_queues and song_queues[guild_id]:
+        voice_client = ctx.voice_client
+        if voice_client and voice_client.is_connected():
+            song = song_queues[guild_id].pop(0)
+            source = discord.FFmpegPCMAudio(song['url'], **FFMPEG_OPTIONS)
+            voice_client.play(source, after=lambda e: play_next_song(ctx))
+    else:
+        asyncio.run_coroutine_threadsafe(disconnect_after_delay(ctx), bot.loop)
+
+async def disconnect_after_delay(ctx):
+    await asyncio.sleep(120)
+    voice_client = ctx.voice_client
+    if voice_client and not voice_client.is_playing() and not voice_client.is_paused():
+        await voice_client.disconnect()
+
+# --- Bot Events ---
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
+    if spotify is None:
+        print("Warning: Spotify client failed to initialize. Spotify links will not work.")
+    else:
+        print("Spotify client initialized successfully.")
     print('Bot is ready to be used!')
+    print('-------------------------')
 
-@bot.command()
+# --- Music Commands ---
+@bot.command(name='play', aliases=['p'], help="Plays a song from YouTube or Spotify.")
+async def play(ctx, *, query: str):
+    if not ctx.author.voice:
+        await ctx.send("You need to be in a voice channel to use this command!")
+        return
+
+    channel = ctx.author.voice.channel
+    voice_client = ctx.voice_client
+
+    if voice_client is None:
+        voice_client = await channel.connect()
+    elif voice_client.channel != channel:
+        await voice_client.move_to(channel)
+
+    guild_id = ctx.guild.id
+    if guild_id not in song_queues:
+        song_queues[guild_id] = []
+
+    songs_to_add = []
+    
+    async with ctx.typing():
+        # Check for Spotify URL
+        if "spotify.com" in query and spotify:
+            if "track" in query:
+                try:
+                    track = spotify.track(query)
+                    search_query = f"{track['name']} {track['artists'][0]['name']} audio"
+                    songs_to_add.append({'query': search_query, 'source': 'spotify'})
+                except Exception as e:
+                    await ctx.send(f"Couldn't process the Spotify song link. Error: {e}")
+                    return
+            elif "playlist" in query:
+                try:
+                    results = spotify.playlist_tracks(query)
+                    for item in results['items']:
+                        track = item['track']
+                        search_query = f"{track['name']} {track['artists'][0]['name']} audio"
+                        songs_to_add.append({'query': search_query, 'source': 'spotify'})
+                    await ctx.send(f"Adding {len(songs_to_add)} songs from the playlist to the queue...")
+                except Exception as e:
+                    await ctx.send(f"Couldn't process the Spotify playlist link. Error: {e}")
+                    return
+            else:
+                 await ctx.send("That Spotify link type is not supported.")
+                 return
+
+        # Check for YouTube URL or plain search
+        else:
+            search_query = query if "youtube.com" in query or "youtu.be" in query else f"ytsearch:{query}"
+            songs_to_add.append({'query': search_query, 'source': 'youtube'})
+
+        # Process all songs found
+        for song_info in songs_to_add:
+            try:
+                with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
+                    info = ydl.extract_info(song_info['query'], download=False)
+                    if 'entries' in info:
+                        info = info['entries'][0]
+                    
+                    song = {'url': info['url'], 'title': info['title']}
+                    song_queues[guild_id].append(song)
+                    
+                    if len(songs_to_add) == 1:
+                        await ctx.send(f"✅ Added to queue: **{song['title']}**")
+
+            except Exception as e:
+                print(f"Error processing {song_info['query']}: {e}")
+                if len(songs_to_add) == 1:
+                    await ctx.send("Sorry, I couldn't process that request.")
+
+    if not voice_client.is_playing() and not voice_client.is_paused():
+        play_next_song(ctx)
+
+
+@bot.command(name='queue', aliases=['q'], help="Shows the current song queue.")
+async def queue(ctx):
+    guild_id = ctx.guild.id
+    if guild_id not in song_queues or not song_queues[guild_id]:
+        await ctx.send("The queue is currently empty.")
+        return
+
+    embed = discord.Embed(title="🎵 Song Queue 🎵", color=discord.Color.blue())
+    queue_list = ""
+    for i, song in enumerate(song_queues[guild_id]):
+        queue_list += f"`{i+1}.` {song['title']}\n"
+    
+    embed.description = queue_list
+    await ctx.send(embed=embed)
+
+# --- Soundboard Commands & New Helper ---
+
+async def play_sound_effect(ctx, sound_path: str, volume: float = 0.4):
+    """
+    A smart helper function to play a sound effect.
+    It connects if not connected, and interrupts music if it's playing.
+    """
+    if not ctx.author.voice:
+        await ctx.send("You need to be in a voice channel to use this command!")
+        return
+    
+    if not os.path.exists(sound_path):
+        await ctx.send(f"Oops, I couldn't find the sound file: `{sound_path}`")
+        return
+
+    channel = ctx.author.voice.channel
+    voice_client = ctx.voice_client
+
+    # Connect or move to the user's channel if necessary
+    if voice_client is None:
+        voice_client = await channel.connect()
+    elif voice_client.channel != channel:
+        await voice_client.move_to(channel)
+
+    sound_source = discord.FFmpegPCMAudio(sound_path)
+    volume_source = discord.PCMVolumeTransformer(sound_source, volume=volume)
+
+    # If music is playing, stop it. The sound will play, and the 'after' will resume the queue.
+    if voice_client.is_playing():
+        voice_client.stop()
+        voice_client.play(volume_source, after=lambda e: play_next_song(ctx))
+    else:
+        # If not playing anything, play the sound and then start the disconnect timer.
+        voice_client.play(volume_source, after=lambda e: asyncio.run_coroutine_threadsafe(disconnect_after_delay(ctx), bot.loop))
+
+
+@bot.command(name='heart', aliases=['broken_heart', '💔'])
+async def heart_command(ctx):
+    chosen_name = random.choice(names_to_pity)
+    name_sound_path = f"sounds/{chosen_name.lower()}.mp3"
+    # This command is special and should not be interruptible in the same way
+    await play_sound_effect(ctx, name_sound_path, volume=1.0) 
+
+    if ctx.invoked_with == '💔':
+        await asyncio.sleep(0.5) 
+        second_sound_name = random.choice(['oink.mp3', 'haha.mp3', 'obama.mp3', 'shit.mp3'])
+        second_sound_path = f"sounds/{second_sound_name}"
+        await play_sound_effect(ctx, second_sound_path)
+
+@bot.command(name='hot_face', aliases=["🥵"])
+async def hot_face(ctx):
+    await play_sound_effect(ctx, 'sounds/bust.mp3')
+
+@bot.command(name='obama')
+async def obama(ctx):
+    await play_sound_effect(ctx, 'sounds/obama.mp3')
+
+@bot.command(name='oink')
+async def oink(ctx):
+    await play_sound_effect(ctx, 'sounds/oink.mp3')
+
+# --- Other Commands ---
+# (Unchanged commands are here for completeness)
+@bot.command(name='remove', help="Removes a song from the queue by its number.")
+async def remove(ctx, number: int):
+    guild_id = ctx.guild.id
+    if guild_id in song_queues and song_queues[guild_id]:
+        if 1 <= number <= len(song_queues[guild_id]):
+            removed_song = song_queues[guild_id].pop(number - 1)
+            await ctx.send(f"🗑️ Removed **{removed_song['title']}** from the queue.")
+        else:
+            await ctx.send("Invalid number. Use `!queue` to see the song numbers.")
+    else:
+        await ctx.send("The queue is empty.")
+
+@bot.command(name='skip', help="Skips the current song.")
+async def skip(ctx):
+    voice_client = ctx.voice_client
+    if voice_client and voice_client.is_playing():
+        voice_client.stop()
+        await ctx.send("Skipped to the next song. ⏭️")
+    else:
+        await ctx.send("I'm not playing anything right now.")
+
+@bot.command(name='skipto', help="Skips to a specific song in the queue.")
+async def skipto(ctx, number: int):
+    guild_id = ctx.guild.id
+    voice_client = ctx.voice_client
+
+    if guild_id in song_queues and song_queues[guild_id]:
+        if 1 <= number <= len(song_queues[guild_id]):
+            song_queues[guild_id] = song_queues[guild_id][number-1:]
+            if voice_client and voice_client.is_playing():
+                voice_client.stop()
+                await ctx.send(f"Skipped to **{song_queues[guild_id][0]['title']}**.")
+            else:
+                 await ctx.send("Queue has been updated.")
+        else:
+            await ctx.send("Invalid number. Use `!queue` to see song numbers.")
+    else:
+        await ctx.send("The queue is empty.")
+
+@bot.command(name='pause', help="Pauses the current song.")
+async def pause(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.pause()
+        await ctx.send("Paused. ⏸️")
+
+@bot.command(name='resume', help="Resumes the paused song.")
+async def resume(ctx):
+    if ctx.voice_client and ctx.voice_client.is_paused():
+        ctx.voice_client.resume()
+        await ctx.send("Resumed. ▶️")
+
+@bot.command(name='stop', aliases=['disconnect', 'leave'], help="Stops playback and disconnects the bot.")
+async def stop(ctx):
+    guild_id = ctx.guild.id
+    if guild_id in song_queues:
+        song_queues[guild_id] = [] # Clear the queue
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await ctx.send("Stopped and disconnected. ⏹️")
+
+@bot.command(name='help')
+async def help(ctx):
+    embed = discord.Embed(
+        title="Bot Commands",
+        description="Here is a list of all available commands.",
+        color=discord.Color.purple()
+    )
+    embed.add_field(
+        name="🎵 Music Commands",
+        value="`!play <search/URL>`: Plays or adds a song/playlist to the queue.\n"
+              "`!queue`: Shows the current song queue.\n"
+              "`!skip`: Skips the current song.\n"
+              "`!skipto <number>`: Skips to a song number in the queue.\n"
+              "`!remove <number>`: Removes a song from the queue.\n"
+              "`!pause`: Pauses the music.\n"
+              "`!resume`: Resumes the music.\n"
+              "`!stop`: Stops music and disconnects the bot.",
+        inline=False
+    )
+    embed.add_field(
+        name="🔊 Soundboard Commands",
+        value="`!heart` or `!💔`: Plays a... special sound.\n"
+              "`!hot_face` or `!🥵`: Plays another... special sound.\n"
+              "`!oink`: Plays an oink sound.\n"
+              "`!obama`: Plays an obama sound.",
+        inline=False
+    )
+    embed.add_field(
+        name="🛠️ Utility Commands",
+        value="`!choose <opt1, opt2, ...>`: Chooses from a list of options.\n"
+              "`!help`: Shows this message.",
+        inline=False
+    )
+    embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+    await ctx.send(embed=embed)
+
+@bot.command(name='choose', help="Chooses from a list of options.")
 async def choose(ctx, *, options):
-    """Chooses one option from a comma-separated list."""
     option_list = [opt.strip() for opt in options.split(',')]
     if len(option_list) < 2:
         await ctx.send("Please provide at least two options, separated by commas.")
@@ -52,88 +351,5 @@ async def choose_error(ctx, error):
     if isinstance(error, commands.MissingRequiredArgument):
         await ctx.send("You need to give me some options to choose from! \nExample: `!choose heads, tails`")
 
-
-@bot.command(name='heart', aliases=['broken_heart', '💔'])
-async def heart_command(ctx):
-    """Joins voice, plays sound(s), and sends a pity message.
-    The '💔' alias plays an extra random sound."""
-    
-    # --- CHOOSE NAME AND PREPARE MESSAGES/SOUNDS ---
-    chosen_name = random.choice(names_to_pity)
-    pity_text = random.choice(arena_pity_texts)
-    final_message = pity_text.format(name=chosen_name)
-    name_sound_path = f"sounds/{chosen_name.lower()}.mp3"
-    
-    # --- VOICE CHANNEL LOGIC ---
-    if ctx.author.voice:
-        if not os.path.exists(name_sound_path):
-            await ctx.send(f"Oops, I couldn't find the sound file for {chosen_name} (`{name_sound_path}`).")
-        else:
-            channel = ctx.author.voice.channel
-            voice_client = None # Define voice_client to ensure it's available in the finally block
-            try:
-                # Connect to voice
-                if ctx.voice_client is not None:
-                    voice_client = await ctx.voice_client.move_to(channel)
-                else:
-                    voice_client = await channel.connect()
-
-                # 1. Play the first sound (the name)
-                audio_source1 = discord.FFmpegPCMAudio(name_sound_path)
-                voice_client.play(audio_source1)
-                while voice_client.is_playing():
-                    await asyncio.sleep(1)
-
-                # 2. If the '💔' alias was used, play a second, random sound
-                if ctx.invoked_with == '💔':
-                    second_sound_name = random.choice(['oink.mp3', 'haha.mp3', 'obama.mp3', 'shit.mp3'])
-                    second_sound_path = f"sounds/{second_sound_name}"
-                    
-                    if not os.path.exists(second_sound_path):
-                         await ctx.send(f"I was supposed to play a second sound, but I couldn't find `{second_sound_path}`.")
-                    else:
-                        audio_source2 = discord.FFmpegPCMAudio(second_sound_path)
-                        voice_client.play(audio_source2)
-                        while voice_client.is_playing():
-                            await asyncio.sleep(1)
-
-            except Exception as e:
-                print(f"Error during voice playback: {e}")
-            finally:
-                # Disconnect after all sounds are finished or if an error occurred
-                if voice_client and voice_client.is_connected():
-                    await voice_client.disconnect()
-    #else:
-    #    await ctx.send("You're not in a voice channel, so I can't play any sounds, but here's your message:")
-
-    # --- SEND TEXT MESSAGE ---
-    #await ctx.send(final_message)
-
-
-@bot.command(name='hot_face', aliases=["🥵"])
-async def hot_face(ctx):
-    # Check if the person who sent the command is in a voice channel
-    if ctx.author.voice:
-        channel = ctx.author.voice.channel
-        
-        # Connect to the voice channel
-        voice_client = await channel.connect()
-        
-        # Define the audio source
-        audio_source = discord.FFmpegPCMAudio('sounds/bust.mp3')
-        
-        volume_adjusted_source = discord.PCMVolumeTransformer(audio_source, volume=0.4)
-        
-        # Play the sound and disconnect when finished
-        voice_client.play(volume_adjusted_source, after=lambda e: print(f'Finished playing, error: {e}'))
-        
-        while voice_client.is_playing():
-            await asyncio.sleep(1) # Wait until the sound is done
-        
-        await voice_client.disconnect()
-
-    else:
-        await ctx.send("You need to be in a voice channel to use this command!")
-
-# Run the bot with your token
+# --- Run the Bot ---
 bot.run(TOKEN)
